@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ragdoll Sumo Lab</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#111;font-family:system-ui,sans-serif;color:#eee}
+#game{display:block;width:100vw;height:100vh;background:linear-gradient(#8fd3ff 0 58%,#d8c28a 58% 100%)}
+#ui{position:fixed;left:14px;top:12px;background:#111c;padding:12px 14px;border:1px solid #ffffff33;border-radius:10px;backdrop-filter:blur(5px);max-width:330px}
+#ui b{font-size:18px} #ui small{display:block;line-height:1.4;margin-top:5px;color:#ccc}
+button{margin-top:9px;margin-right:6px;padding:7px 10px;border:0;border-radius:7px;cursor:pointer}
+label{display:block;font-size:12px;margin-top:8px} input{width:145px;vertical-align:middle}
+#msg{margin-top:7px;font-weight:700} kbd{background:#333;border:1px solid #666;border-radius:4px;padding:1px 4px}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">
+<b>Ragdoll Sumo Lab</b>
+<small>Move: <kbd>A</kbd>/<kbd>D</kbd> · jump: <kbd>W</kbd> · shove: <kbd>Space</kbd></small>
+<small>Knock the blue CPU out of the ring. Every limb is physics-driven.</small>
+<button id="reset">Reset</button><button id="chaos">Chaos: Off</button>
+<label>Gravity <input id="gravity" type="range" min=".25" max="2" step=".05" value="1"></label>
+<label>Joint strength <input id="joint" type="range" min=".2" max="1.5" step=".05" value=".75"></label>
+<div id="msg">Fight!</div>
+</div>
+<script>
+const c=document.getElementById('game'),ctx=c.getContext('2d');
+let W,H,dpr=1;
+function resize(){dpr=devicePixelRatio||1;W=innerWidth;H=innerHeight;c.width=W*dpr;c.height=H*dpr;c.style.width=W+'px';c.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener('resize',resize);resize();
+
+const keys={};addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;if(e.code==='Space')e.preventDefault()});
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+
+const bodies=[],joints=[];let gravity=1,jointStrength=.75,chaos=false,state='fight',last=performance.now(),accum=0;
+class Body{
+ constructor(x,y,w,h,m,color,name){Object.assign(this,{x,y,w,h,m,color,name,vx:0,vy:0,a:0,av:0,grounded:false,dead:false});this.inv=1/m;this.r=Math.hypot(w,h)/2;bodies.push(this)}
+}
+class Joint{
+ constructor(a,b,ax,ay,bx,by,stiff=.8){Object.assign(this,{a,b,ax,ay,bx,by,stiff});joints.push(this)}
+ solve(){
+  const A=this.world(this.a,this.ax,this.ay),B=this.world(this.b,this.bx,this.by);
+  let dx=B[0]-A[0],dy=B[1]-A[1],d=Math.hypot(dx,dy)||1,s=Math.min(.45,this.stiff*jointStrength*.28);
+  const ix=dx/d*s,iy=dy/d*s;this.a.x+=ix;this.a.y+=iy;this.b.x-=ix;this.b.y-=iy;
+  this.a.av*=.995;this.b.av*=.995;
+ }
+ world(o,x,y){let co=Math.cos(o.a),si=Math.sin(o.a);return[o.x+x*co-y*si,o.y+x*si+y*co]}
+}
+function makeRagdoll(x,color,name,ai=false){
+ const p={};
+ p.body=new Body(x,300,46,74,4,color,name+' torso');p.head=new Body(x,245,38,38,2,color,name+' head');
+ p.la=new Body(x-39,306,20,58,1.2,color,name+' arm');p.ra=new Body(x+39,306,20,58,1.2,color,name+' arm');
+ p.ll=new Body(x-18,367,23,64,1.7,color,name+' leg');p.rl=new Body(x+18,367,23,64,1.7,color,name+' leg');
+ p.lf=new Body(x-19,409,34,18,1.4,color,name+' foot');p.rf=new Body(x+19,409,34,18,1.4,color,name+' foot');
+ const s=.8;
+ new Joint(p.body,p.head,0,-37,0,19,.95);new Joint(p.body,p.la,-23,-24,0,-29,s);new Joint(p.body,p.ra,23,-24,0,-29,s);
+ new Joint(p.body,p.ll,-15,35,0,-30,s);new Joint(p.body,p.rl,15,35,0,-30,s);
+ new Joint(p.ll,p.lf,0,32,0,-9,.95);new Joint(p.rl,p.rf,0,32,0,-9,.95);
+ p.ai=ai;p.cool=0;p.color=color;p.name=name;return p;
+}
+let P,E;
+function reset(){
+ bodies.length=0;joints.length=0;P=makeRagdoll(W/2-120,'#e74c3c','Player');E=makeRagdoll(W/2+120,'#4c78e8','CPU',true);
+ state='fight';document.getElementById('msg').textContent='Fight!';
+}
+reset();
+function impulse(b,ix,iy){b.vx+=ix*b.inv*20;b.vy+=iy*b.inv*20}
+function control(r,dt){
+ const t=r.body;
+ if(!r.ai){
+  if(keys.a)t.vx-=.55;if(keys.d)t.vx+=.55;if(keys.w&&t.grounded)t.vy-=10;
+  if(keys[' ']&&r.cool<=0){r.cool=.35;let dir=Math.sign(E.body.x-P.body.x)||1;impulse(t,dir,0);impulse(E.body,-dir*.9,-.05);E.head.vx+=dir*2.5;E.head.vy-=1}
+ }else{
+  const dir=Math.sign(P.body.x-t.x)||1;
+  if(Math.abs(P.body.x-t.x)>85)t.vx+=dir*.38;else t.vx-=dir*.25;
+  if(Math.random()<.015)t.vy-=7;
+  if(r.cool<=0&&Math.abs(P.body.x-t.x)<125){r.cool=.7;impulse(t,-dir*.6,0);impulse(P.body,dir*.75,-.05)}
+ }
+ r.cool-=dt;
+}
+function collideGround(b){
+ const cx=W/2,cy=H-145,dx=b.x-cx,dy=b.y-cy,dist=Math.hypot(dx,dy)||1;
+ if(dist>ringR+55)return;
+ const floor=cy+Math.sqrt(Math.max(0,ringR*ringR-Math.min(dx*dx,ringR*ringR))),bottom=b.y+b.h/2;
+ if(bottom>floor&&b.vy>0){b.y-=bottom-floor;b.vy*=-.22;b.vx*=.88;b.grounded=true}else b.grounded=false;
+}
+const ringR=220;
+function step(dt){
+ for(const b of bodies){b.vy+=.55*gravity;b.vx*=.997;b.vy*=.999;b.av*=.997;b.x+=b.vx;b.y+=b.vy;b.a+=b.av;collideGround(b)}
+ for(let k=0;k<7;k++)for(const j of joints)j.solve();
+ for(let i=0;i<bodies.length;i++)for(let j=i+1;j<bodies.length;j++){
+  const a=bodies[i],b=bodies[j];if(a.name.includes('foot')||b.name.includes('foot'))continue;
+  let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,min=(a.r+b.r)*.43;
+  if(d<min){let nx=dx/d,ny=dy/d,pen=min-d;a.x-=nx*pen*.5;a.y-=ny*pen*.5;b.x+=nx*pen*.5;b.y+=ny*pen*.5;let rel=(b.vx-a.vx)*nx+(b.vy-a.vy)*ny;if(rel<0){let q=-rel*.55;a.vx-=nx*q;a.vy-=ny*q;b.vx+=nx*q;b.vy+=ny*q}}
+ }
+ control(P,dt);control(E,dt);
+ if(chaos)for(const b of bodies){b.av+=(Math.random()-.5)*.025;b.vx+=(Math.random()-.5)*.04}
+ const cx=W/2,cy=H-145;
+ for(const r of [P,E])if(Math.hypot(r.body.x-cx,r.body.y-cy)>ringR+90||r.body.y>H+150)r.body.dead=true;
+ if(state==='fight'){if(E.body.dead){state='win';document.getElementById('msg').textContent='YOU WIN — Reset to fight again!'}else if(P.body.dead){state='lose';document.getElementById('msg').textContent='CPU WINS — Reset to try again!'}}
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);const cx=W/2,cy=H-145;
+ ctx.fillStyle='#b89a60';ctx.beginPath();ctx.arc(cx,cy,ringR+28,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#eee';ctx.beginPath();ctx.arc(cx,cy,ringR,0,Math.PI*2);ctx.fill();
+ ctx.strokeStyle='#8a6c3d';ctx.lineWidth=5;ctx.beginPath();ctx.arc(cx,cy,ringR,0,Math.PI*2);ctx.stroke();
+ ctx.strokeStyle='#bbb';ctx.lineWidth=2;ctx.beginPath();ctx.arc(cx,cy,ringR-12,0,Math.PI*2);ctx.stroke();
+ for(const b of bodies){ctx.save();ctx.translate(b.x,b.y);ctx.rotate(b.a);ctx.fillStyle=b.color;ctx.strokeStyle='#222';ctx.lineWidth=2;ctx.beginPath();ctx.roundRect(-b.w/2,-b.h/2,b.w,b.h,Math.min(10,b.w/4));ctx.fill();ctx.stroke();ctx.restore()}
+ for(const r of [P,E]){const b=r.head;ctx.save();ctx.translate(b.x,b.y);ctx.rotate(b.a);ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(-8,-4,4,0,7);ctx.arc(8,-4,4,0,7);ctx.fill();ctx.fillStyle='#111';ctx.beginPath();ctx.arc(-8,-4,1.8,0,7);ctx.arc(8,-4,1.8,0,7);ctx.fill();ctx.restore()}
+ ctx.fillStyle='#222';ctx.font='bold 16px system-ui';ctx.textAlign='center';ctx.fillText('PLAYER',P.body.x,P.head.y-30);ctx.fillText('CPU',E.body.x,E.head.y-30);
+}
+function loop(now){let dt=Math.min(.033,(now-last)/1000);last=now;accum+=dt;while(accum>=1/60){step(1/60);accum-=1/60}draw();requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+document.getElementById('reset').onclick=reset;
+document.getElementById('chaos').onclick=e=>{chaos=!chaos;e.target.textContent='Chaos: '+(chaos?'ON':'Off')};
+document.getElementById('gravity').oninput=e=>gravity=+e.target.value;
+document.getElementById('joint').oninput=e=>jointStrength=+e.target.value;
+</script>
+</body>
+</html>
